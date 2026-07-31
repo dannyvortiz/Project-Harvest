@@ -691,15 +691,20 @@ fmt = {
     "Discount Rate":     "{:.2%}",
 }
 
+# pandas >= 2.1 renamed applymap → map; support both versions
+_style = store_kpi.style.format(fmt)
+try:
+    _style = _style.map(color_prime, subset=["Prime Cost %"])
+except AttributeError:
+    _style = _style.applymap(color_prime, subset=["Prime Cost %"])
+_style = _style.set_properties(**{
+    "background-color": "#161B27",
+    "color": "#EAF2FA",
+    "border": "1px solid #1F2937",
+})
+
 st.dataframe(
-    store_kpi.style
-        .format(fmt)
-        .applymap(color_prime, subset=["Prime Cost %"])
-        .set_properties(**{
-            "background-color": "#161B27",
-            "color": "#EAF2FA",
-            "border": "1px solid #1F2937",
-        }),
+    _style,
     hide_index=True,
     use_container_width=True,
     height=220,

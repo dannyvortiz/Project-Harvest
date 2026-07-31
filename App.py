@@ -330,7 +330,7 @@ with st.sidebar:
     monthly_rent_k = st.number_input("Monthly Rent / Store ($K)", value=22.0, step=1.0)
     monthly_ga_pct = st.slider(
         "G&A % of Revenue", min_value=0.03, max_value=0.10,
-        value=0.055, step=0.005, format="%.1%%"
+        value=0.055, step=0.005, format="%.1f%%"
     )
 
 # ── Date filter ───────────────────────────────────────────────────────────────

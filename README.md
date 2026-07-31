@@ -6,9 +6,7 @@
 
 ## Live Dashboard
 
-**[Launch Dashboard →](https://your-app-name.streamlit.app)**
-
-*Replace the link above with your Streamlit URL after deployment.*
+project-harvest-gz9bxcmgxuy7xby4sp9cuq
 
 ---
 

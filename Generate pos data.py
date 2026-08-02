@@ -272,3 +272,4 @@ if __name__ == "__main__":
         Avg_Prime_Cost=("Prime_Cost_Pct","mean")
     ).round(4)
     print(store_summary.to_string())
+    

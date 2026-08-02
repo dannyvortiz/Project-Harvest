@@ -85,15 +85,39 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Auto-generate POS data if CSV is missing ──────────────────────────────────
+import os, importlib.util, pathlib
+
+_CSV_PATH = "pos_transactions.csv"
+_GEN_PATH = pathlib.Path(__file__).parent / "generate_pos_data.py"
+
+if not os.path.exists(_CSV_PATH):
+    if _GEN_PATH.exists():
+        with st.spinner("Generating POS data for the first time — about 30 seconds..."):
+            spec = importlib.util.spec_from_file_location("generate_pos_data", _GEN_PATH)
+            mod  = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            df_gen = mod.generate_transactions(start_date="2023-01-01", months=24)
+            df_gen["Date"]    = pd.to_datetime(df_gen["Date"])
+            df_gen["Month"]   = df_gen["Date"].dt.to_period("M").astype(str)
+            df_gen["Year"]    = df_gen["Date"].dt.year
+            df_gen["Quarter"] = df_gen["Date"].dt.to_period("Q").astype(str)
+            df_gen["Prime_Cost"]     = df_gen["Cost_of_Goods_Sold"] + df_gen["Labor_Cost"]
+            df_gen["Prime_Cost_Pct"] = df_gen["Prime_Cost"] / df_gen["Net_Sales"].replace(0, np.nan)
+            df_gen["COGS_Pct"]       = df_gen["Cost_of_Goods_Sold"] / df_gen["Net_Sales"].replace(0, np.nan)
+            df_gen["Labor_Pct"]      = df_gen["Labor_Cost"] / df_gen["Net_Sales"].replace(0, np.nan)
+            df_gen.to_csv(_CSV_PATH, index=False)
+        st.success("Data ready — loading dashboard!")
+        st.rerun()
+    else:
+        st.error("pos_transactions.csv and generate_pos_data.py not found. Place both files in the same folder as app.py.")
+        st.stop()
+
 # ── Data Loading ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def load_data(path: str = "pos_transactions.csv") -> pd.DataFrame:
     """Load and pre-process the POS transaction dataset."""
-    try:
-        df = pd.read_csv(path, parse_dates=["Date"])
-    except FileNotFoundError:
-        st.error("POS data not found. Run `python3 generate_pos_data.py` first.")
-        st.stop()
+    df = pd.read_csv(path, parse_dates=["Date"])
 
     df["Month"]   = df["Date"].dt.to_period("M").astype(str)
     df["Year"]    = df["Date"].dt.year.astype(str)

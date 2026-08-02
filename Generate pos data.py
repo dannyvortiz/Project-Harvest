@@ -191,21 +191,18 @@ def generate_transactions(start_date: str = "2023-01-01",
                     cogs_pct  = min(cogs_pct, 0.72)
                     cogs      = round(net_sales * cogs_pct, 2)
 
-                    # Labor cost — target 25-32% of net sales depending on order type.
-                    # Real restaurant labor is a shared daily cost across all shifts;
-                    # allocating it as a % of each ticket's revenue is the correct
-                    # approach for POS-level data. Hours are back-calculated from cost.
-                    base_labor_pct = np.random.uniform(0.265, 0.305)          # 26.5–30.5% baseline
-                    base_labor_pct *= ot_cfg["labor_factor"]                   # dine-in higher, delivery lower
-                    base_labor_pct *= (1.0 + variances["labor_uplift"])        # S004 Q3 overtime
-                    base_labor_pct  = np.clip(base_labor_pct, 0.20, 0.38)     # hard floor/ceiling
+                    # Labor (allocated at transaction level)
+                    base_labor_hrs = net_sales / np.random.uniform(38, 58)
+                    base_labor_hrs *= ot_cfg["labor_factor"]
+                    base_labor_hrs *= (1.0 + variances["labor_uplift"])
+                    base_labor_hrs  = max(0.01, base_labor_hrs)
+                    labor_hrs = round(base_labor_hrs, 4)
 
-                    # Wage rate ($16–$22/hr + overtime premium for S004 Q3)
+                    # Wage rate ($16-$22/hr + overtime premium for S004 Q3)
                     base_wage = np.random.uniform(16.5, 21.5)
                     if store_id == "S004" and dt.month in [7, 8, 9]:
-                        base_wage *= 1.18                                       # overtime premium
-                    labor_cost = round(net_sales * base_labor_pct, 2)
-                    labor_hrs  = round(max(0.01, labor_cost / base_wage), 4)   # hours implied by cost
+                        base_wage *= 1.18  # overtime premium
+                    labor_cost = round(labor_hrs * base_wage, 2)
 
                     # Table size
                     table_size = max(1, int(np.random.choice(
@@ -272,4 +269,3 @@ if __name__ == "__main__":
         Avg_Prime_Cost=("Prime_Cost_Pct","mean")
     ).round(4)
     print(store_summary.to_string())
-    

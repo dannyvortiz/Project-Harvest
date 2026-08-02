@@ -89,7 +89,7 @@ st.markdown("""
 import os, importlib.util, pathlib
 
 _CSV_PATH = "pos_transactions.csv"
-_GEN_PATH = pathlib.Path(__file__).parent / "generate_pos_data.py"
+_GEN_PATH = pathlib.Path(os.getcwd()) / "generate_pos_data.py"
 
 if not os.path.exists(_CSV_PATH):
     if _GEN_PATH.exists():

@@ -86,22 +86,86 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 import os
-import sys
-import importlib.util
+import random
+from datetime import datetime, timedelta
 
-def _load_generator():
-    """Load generate_transactions from whichever filename exists."""
-    base = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
-    for name in ["generate_pos_data.py", "generate pos data.py"]:
-        path = os.path.join(base, name)
-        if os.path.exists(path):
-            spec = importlib.util.spec_from_file_location("generate_pos_data", path)
-            mod  = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod.generate_transactions
-    raise FileNotFoundError("Could not find generate_pos_data.py or 'generate pos data.py' next to app.py")
+# ── POS Data Generator (embedded) ─────────────────────────────────────────────
+# Embedded directly so the app works on Streamlit Cloud without any extra files.
 
-generate_transactions = _load_generator()
+_STORES = {
+    "S001": {"name": "Downtown Dallas",  "base_daily_txn": 85, "avg_check": 28.50},
+    "S002": {"name": "Uptown",           "base_daily_txn": 72, "avg_check": 31.20},
+    "S003": {"name": "Deep Ellum",       "base_daily_txn": 68, "avg_check": 24.80},
+    "S004": {"name": "Plano Legacy",     "base_daily_txn": 60, "avg_check": 26.40},
+    "S005": {"name": "Frisco Hub",       "base_daily_txn": 55, "avg_check": 27.10},
+}
+_DAY_PARTS = {
+    "Lunch":      {"hours": (11, 14), "weight": 0.42, "check_mult": 0.85},
+    "Dinner":     {"hours": (17, 21), "weight": 0.45, "check_mult": 1.10},
+    "Late Night": {"hours": (21, 24), "weight": 0.13, "check_mult": 0.90},
+}
+_CATEGORIES = {
+    "Food":     {"weight": 0.58, "cogs_pct_range": (0.28, 0.34)},
+    "Beverage": {"weight": 0.27, "cogs_pct_range": (0.18, 0.24)},
+    "Alcohol":  {"weight": 0.15, "cogs_pct_range": (0.22, 0.28)},
+}
+_ORDER_TYPES = {
+    "Dine-in":  {"weight": 0.52, "check_mult": 1.12, "labor_factor": 1.15},
+    "Takeout":  {"weight": 0.31, "check_mult": 0.95, "labor_factor": 0.85},
+    "Delivery": {"weight": 0.17, "check_mult": 1.05, "labor_factor": 0.70},
+}
+_SEASONAL = {1:0.88,2:0.85,3:0.92,4:0.98,5:1.05,6:1.08,7:1.06,8:1.02,9:0.97,10:0.99,11:1.03,12:1.15}
+_DOW     = {0:0.82,1:0.85,2:0.90,3:0.95,4:1.15,5:1.25,6:1.08}
+
+def _store_variances(store_id, dt):
+    v = {"cogs_uplift":0.0,"labor_uplift":0.0,"check_uplift":0.0,"volume_uplift":0.0,"discount_rate":0.04}
+    m, yr = dt.month, dt.year - 2023
+    if store_id == "S004":
+        if m in [7,8,9]:  v["cogs_uplift"]+=0.062; v["labor_uplift"]+=0.078; v["volume_uplift"]-=0.08
+        if m in [10,11,12]: v["cogs_uplift"]+=0.020; v["labor_uplift"]+=0.025
+    if store_id == "S003" and yr==1 and m in [4,5,6]: v["volume_uplift"]-=0.15; v["check_uplift"]-=0.08
+    if store_id == "S001" and m in [5,6,7,8]: v["volume_uplift"]+=0.12; v["check_uplift"]+=0.06
+    if store_id == "S005":
+        v["volume_uplift"] += min(0.18, m*0.015) if yr==0 else 0.18
+    return v
+
+def generate_transactions(start_date="2023-01-01", months=24, target_records=12000):
+    np.random.seed(42); random.seed(42)
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end   = start + timedelta(days=months*30)
+    dp_list = list(_DAY_PARTS.keys())
+    cat_list = list(_CATEGORIES.keys())
+    ot_list  = list(_ORDER_TYPES.keys())
+    records = []; txn = 1
+    for date in pd.date_range(start, end, freq="D"):
+        dt = date.to_pydatetime()
+        sf = _SEASONAL[dt.month]; dw = _DOW[dt.weekday()]
+        for sid, scfg in _STORES.items():
+            v = _store_variances(sid, dt)
+            n = max(5, int(np.random.poisson(scfg["base_daily_txn"]*dw*sf*(1+v["volume_uplift"]))))
+            by_dp = np.random.multinomial(n, [_DAY_PARTS[d]["weight"] for d in dp_list])
+            for di, dp in enumerate(dp_list):
+                for _ in range(by_dp[di]):
+                    ot  = np.random.choice(ot_list,  p=[_ORDER_TYPES[o]["weight"]  for o in ot_list])
+                    cat = np.random.choice(cat_list, p=[_CATEGORIES[c]["weight"] for c in cat_list])
+                    oc = _ORDER_TYPES[ot]; cc = _CATEGORIES[cat]
+                    gs = max(8.0, round(scfg["avg_check"]*_DAY_PARTS[dp]["check_mult"]*oc["check_mult"]*(1+v["check_uplift"])*np.random.lognormal(0,0.22)*sf,2))
+                    dr = min(v["discount_rate"]*np.random.exponential(1.0), 0.25)
+                    da = round(gs*dr,2); ns = round(gs-da,2)
+                    cp = min(np.random.uniform(*cc["cogs_pct_range"])+v["cogs_uplift"],0.72)
+                    cg = round(ns*cp,2)
+                    lp = np.clip(np.random.uniform(0.265,0.305)*oc["labor_factor"]*(1+v["labor_uplift"]),0.20,0.38)
+                    bw = np.random.uniform(16.5,21.5)*(1.18 if sid=="S004" and dt.month in [7,8,9] else 1)
+                    lc = round(ns*lp,2); lh = round(max(0.01,lc/bw),4)
+                    ts = 0 if ot in ["Takeout","Delivery"] else max(1,int(np.random.choice([1,2,3,4,5,6,8],p=[0.18,0.30,0.22,0.17,0.07,0.04,0.02])))
+                    hr = random.randint(_DAY_PARTS[dp]["hours"][0],_DAY_PARTS[dp]["hours"][1]-1)
+                    ts_str = datetime(dt.year,dt.month,dt.day,hr,random.randint(0,59),random.randint(0,59)).strftime("%Y-%m-%d %H:%M:%S")
+                    records.append({"Transaction_ID":f"TXN-{txn:07d}","Date":dt.strftime("%Y-%m-%d"),"Timestamp":ts_str,
+                        "Store_ID":sid,"Location_Name":scfg["name"],"Day_Part":dp,"Category":cat,
+                        "Gross_Sales":gs,"Discount_Amount":da,"Net_Sales":ns,"Cost_of_Goods_Sold":cg,
+                        "Labor_Hours_Allocated":lh,"Labor_Cost":lc,"Table_Size":ts,"Order_Type":ot})
+                    txn += 1
+    return pd.DataFrame(records)
 
 # ── Data Loading ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)

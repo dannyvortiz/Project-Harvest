@@ -86,16 +86,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 import os
+from generate_pos_data import generate_transactions
 
 # ── Data Loading ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def load_data(path: str = "pos_transactions.csv") -> pd.DataFrame:
-    """Load and pre-process the POS transaction dataset."""
-    try:
+    """Load CSV if it exists, otherwise generate the data in memory."""
+    if os.path.exists(path):
         df = pd.read_csv(path, parse_dates=["Date"])
-    except FileNotFoundError:
-        st.error("pos_transactions.csv not found. Run: python3 generate_pos_data.py")
-        st.stop()
+    else:
+        with st.spinner("Generating POS transaction data — about 30 seconds..."):
+            df = generate_transactions(start_date="2023-01-01", months=24)
+            df["Date"] = pd.to_datetime(df["Date"])
+            try:
+                df.to_csv(path, index=False)
+            except Exception:
+                pass  # read-only filesystem (e.g. Streamlit Cloud) — just use in memory
 
     df["Month"]   = df["Date"].dt.to_period("M").astype(str)
     df["Year"]    = df["Date"].dt.year.astype(str)

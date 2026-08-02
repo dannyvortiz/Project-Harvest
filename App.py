@@ -86,7 +86,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 import os
-from generate_pos_data import generate_transactions
+import sys
+import importlib.util
+
+def _load_generator():
+    """Load generate_transactions from whichever filename exists."""
+    base = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+    for name in ["generate_pos_data.py", "generate pos data.py"]:
+        path = os.path.join(base, name)
+        if os.path.exists(path):
+            spec = importlib.util.spec_from_file_location("generate_pos_data", path)
+            mod  = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod.generate_transactions
+    raise FileNotFoundError("Could not find generate_pos_data.py or 'generate pos data.py' next to app.py")
+
+generate_transactions = _load_generator()
 
 # ── Data Loading ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)

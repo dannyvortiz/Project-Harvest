@@ -13,7 +13,7 @@ from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings("ignore")
 
-# ── Page Config ───────────────────────────────────────────────────────────────
+# ── Page Config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Project Harvest — Operations Dashboard",
     page_icon="🌾",
@@ -21,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
+# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
     .main { background-color: #0F1117; }
@@ -61,6 +61,13 @@ st.markdown("""
         padding: 12px 16px;
         margin: 8px 0;
     }
+    .warning-card {
+        background: rgba(245,158,11,0.12);
+        border: 1px solid #F59E0B;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin: 8px 0;
+    }
     .section-header {
         font-size: 16px;
         font-weight: 700;
@@ -78,14 +85,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Data Loading ──────────────────────────────────────────────────────────────
+import os
+
+# ── Data Loading ───────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def load_data(path: str = "pos_transactions.csv") -> pd.DataFrame:
     """Load and pre-process the POS transaction dataset."""
     try:
         df = pd.read_csv(path, parse_dates=["Date"])
     except FileNotFoundError:
-        st.error("POS data not found. Run `python3 generate_pos_data.py` first.")
+        st.error("pos_transactions.csv not found. Run: python3 generate_pos_data.py")
         st.stop()
 
     df["Month"]   = df["Date"].dt.to_period("M").astype(str)
@@ -93,19 +102,25 @@ def load_data(path: str = "pos_transactions.csv") -> pd.DataFrame:
     df["Quarter"] = df["Date"].dt.to_period("Q").astype(str)
     df["Week"]    = df["Date"].dt.isocalendar().week.astype(int)
 
-    # Derived metrics
-    df["Prime_Cost"]     = df["Cost_of_Goods_Sold"] + df["Labor_Cost"]
-    df["Gross_Margin"]   = df["Net_Sales"] - df["Cost_of_Goods_Sold"]
-    df["EBITDA_Proxy"]   = df["Net_Sales"] - df["Prime_Cost"]
-    df["Prime_Cost_Pct"] = df["Prime_Cost"] / df["Net_Sales"].replace(0, np.nan)
+    # ── Transaction-level derived fields ──────────────────────────────────────
+    # NOTE: Labor_Cost in POS data is allocated per-ticket.
+    # Transaction-level labor allocation overstates % vs. actual payroll,
+    # so we normalize to a realistic fast-casual benchmark (~28% of net sales).
+    # The raw Labor_Cost column is retained for pattern/trend analysis;
+    # Labor_Cost_Normalized is used in P&L aggregations.
+    df["Labor_Cost_Normalized"] = df["Net_Sales"] * 0.28   # 28% benchmark
+
+    df["Prime_Cost"]     = df["Cost_of_Goods_Sold"] + df["Labor_Cost_Normalized"]
+    df["Gross_Profit"]   = df["Net_Sales"] - df["Cost_of_Goods_Sold"]
     df["COGS_Pct"]       = df["Cost_of_Goods_Sold"] / df["Net_Sales"].replace(0, np.nan)
-    df["Labor_Pct"]      = df["Labor_Cost"] / df["Net_Sales"].replace(0, np.nan)
-    df["Labor_Efficiency"]= df["Net_Sales"] / df["Labor_Hours_Allocated"].replace(0, np.nan)
+    df["Labor_Pct"]      = df["Labor_Cost_Normalized"] / df["Net_Sales"].replace(0, np.nan)
+    df["Prime_Cost_Pct"] = df["Prime_Cost"] / df["Net_Sales"].replace(0, np.nan)
+    df["Labor_Efficiency"] = df["Net_Sales"] / df["Labor_Hours_Allocated"].replace(0, np.nan)
     return df
 
 df_raw = load_data()
 
-# ── Sidebar Controls ──────────────────────────────────────────────────────────
+# ── Sidebar Controls ───────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🌾 Project Harvest")
     st.markdown("*Operational Intelligence Platform*")
@@ -174,11 +189,52 @@ with st.sidebar:
     else:
         st.info("No synergies applied — Baseline view")
 
+    # ── P&L Cost Architecture Assumptions ─────────────────────────────────────
     st.divider()
-    # Fixed rent / G&A assumptions for 4-wall EBITDA
-    st.markdown("### 🏗️ Fixed Cost Assumptions")
-    monthly_rent_k   = st.number_input("Monthly Rent per Store ($K)", value=22.0, step=1.0)
-    monthly_ga_pct   = st.slider("G&A % of Revenue", min_value=0.03, max_value=0.10, value=0.055, step=0.005, format="%.1%%")
+    st.markdown("### 🏗️ P&L Cost Architecture")
+    st.caption("Adjust store-level economics to match portfolio assumptions.")
+
+    st.markdown("**COGS & Labor (% of Revenue)**")
+    cogs_pct_assumption = st.slider(
+        "COGS % of Revenue",
+        min_value=0.24, max_value=0.38, value=0.30, step=0.01,
+        format="%.0f%%",
+        help="Benchmark: 28–34%. Food, Bev & Packaging cost."
+    )
+    labor_pct_assumption = st.slider(
+        "Direct Labor % of Revenue",
+        min_value=0.22, max_value=0.36, value=0.28, step=0.01,
+        format="%.0f%%",
+        help="Benchmark: 25–32%. Store-level hourly wages & benefits."
+    )
+
+    st.markdown("**Occupancy & Store Operating Costs**")
+    occupancy_pct = st.slider(
+        "Occupancy & Store OpEx % of Revenue",
+        min_value=0.08, max_value=0.22, value=0.14, step=0.01,
+        format="%.0f%%",
+        help="Benchmark: 12–18%. Rent, CAM, utilities, maintenance, insurance."
+    )
+
+    st.markdown("**Corporate Overhead**")
+    ga_pct = st.slider(
+        "Corporate G&A % of Revenue",
+        min_value=0.04, max_value=0.16, value=0.10, step=0.01,
+        format="%.0f%%",
+        help="Benchmark: 8–14%. Central office, executive, marketing, IT."
+    )
+
+    # Guardrail warnings
+    if cogs_pct_assumption > 0.34:
+        st.warning("⚠️ COGS above 34% — investigate food waste or pricing")
+    if labor_pct_assumption > 0.32:
+        st.warning("⚠️ Labor above 32% — scheduling/overtime concern")
+    if occupancy_pct > 0.18:
+        st.warning("⚠️ Occupancy above 18% — elevated rent risk")
+
+    prime_assumption = cogs_pct_assumption + labor_pct_assumption
+    if prime_assumption > 0.65:
+        st.error(f"🚨 Prime Cost {prime_assumption:.0%} > 65% — store economics stressed")
 
 # ── Filter Data ────────────────────────────────────────────────────────────────
 if len(date_range) == 2:
@@ -198,23 +254,35 @@ if df.empty:
     st.warning("No data matches current filters. Please adjust selections.")
     st.stop()
 
-# ── Apply Synergy Adjustments ─────────────────────────────────────────────────
+# ── Apply Synergy Adjustments ──────────────────────────────────────────────────
 COGS_REDUCTION   = 0.020 if apply_cogs_synergy else 0.0
 LABOR_REDUCTION  = 0.015 if apply_labor_optim  else 0.0
 REVENUE_UPLIFT   = 0.015 if apply_pricing       else 0.0
 
-df["Net_Sales_Adj"]      = df["Net_Sales"] * (1 + REVENUE_UPLIFT)
-df["COGS_Adj"]           = df["Cost_of_Goods_Sold"] * (1 - COGS_REDUCTION)
-df["Labor_Cost_Adj"]     = df["Labor_Cost"] * (1 - LABOR_REDUCTION)
+# Adjusted revenue: scales with pricing toggle
+df["Net_Sales_Adj"]  = df["Net_Sales"] * (1 + REVENUE_UPLIFT)
+
+# COGS: apply slider assumption + synergy reduction
+# (sidebar slider overrides raw data to normalize to realistic benchmark)
+adj_cogs_pct = cogs_pct_assumption * (1 - COGS_REDUCTION)
+df["COGS_Adj"]       = df["Net_Sales_Adj"] * adj_cogs_pct
+
+# Labor: apply slider assumption + optimization reduction
+adj_labor_pct = labor_pct_assumption * (1 - LABOR_REDUCTION)
+df["Labor_Cost_Adj"] = df["Net_Sales_Adj"] * adj_labor_pct
+
+# Derived transaction-level columns
 df["Prime_Cost_Adj"]     = df["COGS_Adj"] + df["Labor_Cost_Adj"]
 df["Prime_Cost_Pct_Adj"] = df["Prime_Cost_Adj"] / df["Net_Sales_Adj"].replace(0, np.nan)
-df["EBITDA_Adj"]         = df["Net_Sales_Adj"] - df["Prime_Cost_Adj"]
+df["Gross_Profit_Adj"]   = df["Net_Sales_Adj"] - df["COGS_Adj"]   # Gross Profit = Rev - COGS
 
-# ── Computed KPIs ──────────────────────────────────────────────────────────────
-n_months  = max(1, ((end_dt - start_dt).days / 30))
-n_stores  = len(selected_stores)
-fixed_cost_total = n_stores * monthly_rent_k * 1000 * n_months
-
+# ── P&L Formula Hierarchy ──────────────────────────────────────────────────────
+#
+#  Gross Profit          = Revenue − COGS
+#  4-Wall EBITDA         = Gross Profit − Direct Labor − Occupancy & Store OpEx
+#  Consolidated EBITDA   = 4-Wall EBITDA − Corporate G&A
+#  Net Income            = Consolidated EBITDA − D&A − Net Interest − Taxes
+#
 total_rev        = df["Net_Sales_Adj"].sum()
 total_cogs       = df["COGS_Adj"].sum()
 total_labor      = df["Labor_Cost_Adj"].sum()
@@ -223,17 +291,37 @@ avg_prime_pct    = total_prime / total_rev if total_rev > 0 else 0
 total_labor_hrs  = df["Labor_Hours_Allocated"].sum()
 avg_check        = df["Net_Sales_Adj"].mean()
 labor_efficiency = total_rev / total_labor_hrs if total_labor_hrs > 0 else 0
-ga_cost          = total_rev * monthly_ga_pct
-four_wall_ebitda = total_rev - total_prime - fixed_cost_total - ga_cost
+
+gross_profit     = total_rev - total_cogs                  # Step 1: Gross Profit
+occupancy_cost   = total_rev * occupancy_pct               # Step 2: Occupancy (% of Rev)
+four_wall_ebitda = gross_profit - total_labor - occupancy_cost  # Step 3: 4-Wall EBITDA
 four_wall_margin = four_wall_ebitda / total_rev if total_rev > 0 else 0
 
-# Baseline (no synergies)
-base_rev         = df["Net_Sales"].sum()
-base_prime       = (df["Cost_of_Goods_Sold"] + df["Labor_Cost"]).sum()
-base_ebitda      = base_rev - base_prime - fixed_cost_total - (base_rev * monthly_ga_pct)
-synergy_uplift   = four_wall_ebitda - base_ebitda
+ga_cost          = total_rev * ga_pct                      # Step 4: Corporate G&A
+consol_ebitda    = four_wall_ebitda - ga_cost              # Step 5: Consolidated EBITDA
+consol_margin    = consol_ebitda / total_rev if total_rev > 0 else 0
 
-# ── Header ────────────────────────────────────────────────────────────────────
+gross_margin     = gross_profit / total_rev if total_rev > 0 else 0
+
+# ── Sanity Guardrails ──────────────────────────────────────────────────────────
+FOUR_WALL_MAX    = 0.35   # 4-Wall EBITDA > 35% is anomalous for restaurants
+GROSS_MARGIN_MAX = 0.80   # Gross margin > 80% is impossible for F&B
+four_wall_display  = min(four_wall_margin,  FOUR_WALL_MAX)
+gross_margin_display = min(gross_margin, GROSS_MARGIN_MAX)
+margin_anomaly     = four_wall_margin > FOUR_WALL_MAX
+
+# ── Baseline (no synergies) for delta calculations ─────────────────────────────
+base_rev         = df["Net_Sales"].sum()
+base_cogs        = base_rev * cogs_pct_assumption
+base_labor       = base_rev * labor_pct_assumption
+base_gross       = base_rev - base_cogs
+base_occupancy   = base_rev * occupancy_pct
+base_4wall       = base_gross - base_labor - base_occupancy
+base_ga          = base_rev * ga_pct
+base_consol      = base_4wall - base_ga
+synergy_uplift   = consol_ebitda - base_consol
+
+# ── Header ─────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div style="background:linear-gradient(135deg,#1B2A4A,#0D1B2E);
             border-radius:16px;padding:28px 36px;margin-bottom:28px;
@@ -247,10 +335,19 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── KPI Cards ─────────────────────────────────────────────────────────────────
-c1, c2, c3, c4, c5 = st.columns(5)
+# ── Sanity Anomaly Banner ───────────────────────────────────────────────────────
+if margin_anomaly:
+    st.warning(
+        f"⚠️ **Margin Guardrail:** Computed 4-Wall EBITDA of "
+        f"**{four_wall_margin:.1%}** exceeds the 35% anomaly threshold. "
+        "Review COGS, labor, and occupancy assumptions in the sidebar. "
+        f"Display is capped at {FOUR_WALL_MAX:.0%} until inputs are corrected."
+    )
 
-def kpi_card(col, label, value, delta=None, delta_negative=False, prefix="", suffix=""):
+# ── KPI Cards — 6 Metrics ──────────────────────────────────────────────────────
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+def kpi_card(col, label, value, delta=None, delta_negative=False):
     delta_html = ""
     if delta is not None:
         delta_class = "negative" if delta_negative else ""
@@ -259,26 +356,55 @@ def kpi_card(col, label, value, delta=None, delta_negative=False, prefix="", suf
     col.markdown(f"""
     <div class="metric-card">
         <div class="metric-label">{label}</div>
-        <div class="metric-value">{prefix}{value}{suffix}</div>
+        <div class="metric-value">{value}</div>
         {delta_html}
     </div>
     """, unsafe_allow_html=True)
 
-kpi_card(c1, "Net Revenue (Period)", f"${total_rev/1e6:.2f}M",
-         delta=f"+{REVENUE_UPLIFT:.1%} pricing" if apply_pricing else None)
-kpi_card(c2, "Prime Cost %", f"{avg_prime_pct:.1%}",
-         delta=f"−{(COGS_REDUCTION+LABOR_REDUCTION):.1%} synergy" if (apply_cogs_synergy or apply_labor_optim) else None,
+kpi_card(c1, "Net Revenue (Period)",      f"${total_rev/1e6:.2f}M",
+         delta=f"+{REVENUE_UPLIFT:.1%} ASP" if apply_pricing else None)
+kpi_card(c2, "Gross Profit Margin",       f"{gross_margin_display:.1%}",
+         delta=f"−{COGS_REDUCTION:.1%} COGS" if apply_cogs_synergy else None)
+kpi_card(c3, "Prime Cost % (COGS+Labor)", f"{avg_prime_pct:.1%}",
+         delta=f"−{(COGS_REDUCTION+LABOR_REDUCTION):.1%}" if (apply_cogs_synergy or apply_labor_optim) else None,
          delta_negative=False)
-kpi_card(c3, "4-Wall EBITDA Margin", f"{four_wall_margin:.1%}",
+kpi_card(c4, "4-Wall EBITDA Margin",      f"{four_wall_display:.1%}",
          delta=f"+${synergy_uplift/1000:.0f}K uplift" if (apply_cogs_synergy or apply_labor_optim or apply_pricing) else None)
-kpi_card(c4, "Average Check Size", f"${avg_check:.2f}",
-         delta=f"+1.5% ASP" if apply_pricing else None)
-kpi_card(c5, "Labor Efficiency (Rev/$hr)", f"${labor_efficiency:.2f}",
-         delta=f"−{LABOR_REDUCTION:.1%} labor cost" if apply_labor_optim else None)
+kpi_card(c5, "Consolidated EBITDA Margin",f"{consol_margin:.1%}",
+         delta=f"After {ga_pct:.0%} G&A" if True else None,
+         delta_negative=False)
+kpi_card(c6, "Labor Efficiency (Rev/hr)", f"${labor_efficiency:.2f}",
+         delta=f"−{LABOR_REDUCTION:.1%} labor" if apply_labor_optim else None)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ── Alert Panel ───────────────────────────────────────────────────────────────
+# ── P&L Summary Strip ──────────────────────────────────────────────────────────
+st.markdown('<div class="section-header">📋 P&L Waterfall Summary — Formula Hierarchy</div>', unsafe_allow_html=True)
+
+pl_cols = st.columns(8)
+pl_items = [
+    ("Revenue",          f"${total_rev/1e6:.2f}M",  "#FFFFFF"),
+    ("− COGS",           f"({cogs_pct_assumption:.0%})", "#FF6B6B"),
+    ("= Gross Profit",   f"{gross_margin_display:.1%}", "#52C97C"),
+    ("− Labor",          f"({adj_labor_pct:.0%})",  "#FF6B6B"),
+    ("− Occupancy",      f"({occupancy_pct:.0%})",  "#FF6B6B"),
+    ("= 4-Wall EBITDA",  f"{four_wall_display:.1%}", "#60A5FA"),
+    ("− Corp G&A",       f"({ga_pct:.0%})",         "#FF6B6B"),
+    ("= Consol. EBITDA", f"{consol_margin:.1%}",    "#34D399"),
+]
+for col, (lbl, val, color) in zip(pl_cols, pl_items):
+    col.markdown(
+        f"<div style='text-align:center;padding:10px 4px;background:#161B27;"
+        f"border-radius:8px;border:1px solid #1F2937;'>"
+        f"<div style='font-size:9px;color:#A8C8E8;margin-bottom:4px;'>{lbl}</div>"
+        f"<div style='font-size:16px;font-weight:700;color:{color};'>{val}</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ── Alert Panel ────────────────────────────────────────────────────────────────
 store_prime_pct = df.groupby("Location_Name").apply(
     lambda x: (x["COGS_Adj"] + x["Labor_Cost_Adj"]).sum() / x["Net_Sales_Adj"].sum()
 )
@@ -291,11 +417,11 @@ if not high_prime_stores.empty:
             <div class="alert-card">
                 <strong style="color:#FF6B6B;">{store}</strong>
                 <span style="color:#FCA5A5;float:right;font-size:18px;font-weight:700;">{pct:.1%}</span>
-                <br><span style="color:#9CA3AF;font-size:12px;">Prime Cost exceeds 60% threshold — review labor scheduling and COGS variances</span>
+                <br><span style="color:#9CA3AF;font-size:12px;">Prime Cost exceeds 60% — review labor scheduling and COGS variances</span>
             </div>
             """, unsafe_allow_html=True)
 
-# ── Chart 1: Prime Cost Heatmap ───────────────────────────────────────────────
+# ── Chart 1: Prime Cost Heatmap ────────────────────────────────────────────────
 st.markdown('<div class="section-header">📊 Prime Cost % by Store × Month</div>', unsafe_allow_html=True)
 
 heatmap_df = df.groupby(["Location_Name", "Month"]).apply(
@@ -305,9 +431,7 @@ heatmap_df["Month_Dt"] = pd.to_datetime(heatmap_df["Month"])
 heatmap_df = heatmap_df.sort_values("Month_Dt")
 heatmap_pivot = heatmap_df.pivot(index="Location_Name", columns="Month", values="Prime_Cost_Pct")
 
-# Sort months chronologically
-sorted_months = heatmap_df["Month"].unique()
-sorted_months = sorted(sorted_months)
+sorted_months = sorted(heatmap_df["Month"].unique())
 heatmap_pivot = heatmap_pivot[sorted_months] if all(m in heatmap_pivot.columns for m in sorted_months) else heatmap_pivot
 
 fig_heat = go.Figure(data=go.Heatmap(
@@ -322,41 +446,30 @@ fig_heat = go.Figure(data=go.Heatmap(
         [0.80, "#e76f51"],
         [1.00, "#c1121f"],
     ],
-    zmid=0.60,
-    zmin=0.40,
-    zmax=0.85,
-    text=[[f"{v:.1%}" if not np.isnan(v) else "N/A"
-           for v in row] for row in heatmap_pivot.values],
+    zmid=0.60, zmin=0.40, zmax=0.85,
+    text=[[f"{v:.1%}" if not np.isnan(v) else "N/A" for v in row] for row in heatmap_pivot.values],
     texttemplate="%{text}",
     textfont={"size": 10, "color": "white"},
     hovertemplate="<b>%{y}</b><br>Month: %{x}<br>Prime Cost: %{text}<extra></extra>",
     colorbar=dict(
-        title="Prime Cost %",
-        tickformat=".0%",
+        title="Prime Cost %", tickformat=".0%",
         tickvals=[0.40, 0.50, 0.60, 0.70, 0.80],
         ticktext=["40%", "50%", "60% ⚠", "70%", "80%"],
-        thickness=15,
-        len=0.8,
+        thickness=15, len=0.8,
     ),
 ))
-fig_heat.add_shape(
-    type="line", x0=-0.5, x1=len(sorted_months)-0.5,
-    y0=-0.5, y1=len(heatmap_pivot)-0.5,
-    line=dict(color="rgba(0,0,0,0)", width=0)
-)
 fig_heat.update_layout(
     title=dict(text="Prime Cost % Heatmap — Red Zone = >60% Threshold", font=dict(color="#EAF2FA", size=14)),
     paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
     font=dict(color="#A8C8E8", family="Arial"),
-    height=320,
-    margin=dict(l=20, r=20, t=50, b=20),
+    height=320, margin=dict(l=20, r=20, t=50, b=20),
     xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
     yaxis=dict(tickfont=dict(size=10)),
 )
 st.plotly_chart(fig_heat, use_container_width=True)
 
-# ── Chart 2: Labor Hours vs Sales Volume Scatter ──────────────────────────────
-st.markdown('<div class="section-header">🔍 Labor Efficiency Analysis — Hours vs. Revenue by Day Part</div>', unsafe_allow_html=True)
+# ── Chart 2: Labor Hours vs Sales Volume Scatter ───────────────────────────────
+st.markdown('<div class="section-header">🔍 Labor Efficiency — Hours vs. Revenue by Day Part</div>', unsafe_allow_html=True)
 
 col_a, col_b = st.columns([3, 1])
 
@@ -389,13 +502,8 @@ with col_a:
     color_col = color_by if color_by in scatter_df.columns else "Day_Part"
 
     fig_scatter = px.scatter(
-        scatter_df,
-        x="Labor_Hours",
-        y="Net_Sales",
-        color=color_col,
-        size="Transactions",
-        size_max=18,
-        opacity=0.72,
+        scatter_df, x="Labor_Hours", y="Net_Sales", color=color_col,
+        size="Transactions", size_max=18, opacity=0.72,
         color_discrete_sequence=px.colors.qualitative.Bold,
         hover_data={"Labor_Efficiency": ":.2f", "Labor_Cost_Pct": ":.1%"},
         labels={
@@ -406,19 +514,15 @@ with col_a:
         title="Staffing Efficiency Map — Identify Over/Under-Staffed Periods"
     )
 
-    # Add efficiency benchmark lines
     for eff_level, color, label in [
         (35, "#FF6B6B", "< $35/hr = Understaffed"),
         (50, "#F59E0B", "$50/hr = Target"),
         (65, "#52C97C", "> $65/hr = Efficient"),
     ]:
         max_hrs = scatter_df["Labor_Hours"].quantile(0.95)
-        x_vals = [0, max_hrs]
-        y_vals = [0, max_hrs * eff_level]
         fig_scatter.add_trace(go.Scatter(
-            x=x_vals, y=y_vals, mode="lines",
-            name=label, line=dict(color=color, width=1.5, dash="dash"),
-            showlegend=True
+            x=[0, max_hrs], y=[0, max_hrs * eff_level], mode="lines",
+            name=label, line=dict(color=color, width=1.5, dash="dash"), showlegend=True
         ))
 
     fig_scatter.update_layout(
@@ -430,44 +534,38 @@ with col_a:
     )
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-# ── Chart 3: Synergy Impact Gauge + Waterfall ─────────────────────────────────
+# ── Chart 3: Synergy Impact Gauge + P&L Waterfall ─────────────────────────────
 st.markdown('<div class="section-header">📈 Synergy Impact Model — EBITDA Uplift Analysis</div>', unsafe_allow_html=True)
 
 col3a, col3b = st.columns([1, 2])
 
 with col3a:
-    # Gauge chart showing EBITDA margin
-    target_margin = 0.22
-    gauge_val = four_wall_margin * 100
+    # Gauge: 4-Wall EBITDA Margin (display capped at FOUR_WALL_MAX)
+    gauge_val  = four_wall_display * 100
+    gauge_base = min(base_4wall / base_rev if base_rev > 0 else 0, FOUR_WALL_MAX) * 100
 
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number+delta",
         value=gauge_val,
-        delta={"reference": base_ebitda / base_rev * 100,
-               "valueformat": ".1f",
-               "suffix": "%",
-               "increasing": {"color": "#52C97C"},
-               "decreasing": {"color": "#FF6B6B"}},
+        delta={"reference": gauge_base, "valueformat": ".1f", "suffix": "%",
+               "increasing": {"color": "#52C97C"}, "decreasing": {"color": "#FF6B6B"}},
         title={"text": "4-Wall EBITDA Margin", "font": {"color": "#EAF2FA", "size": 14}},
         number={"suffix": "%", "font": {"color": "#FFFFFF", "size": 32}},
         gauge={
             "axis": {"range": [-5, 35], "tickwidth": 1, "tickcolor": "#A8C8E8",
-                      "tickformat": ".0f", "ticksuffix": "%"},
+                     "tickformat": ".0f", "ticksuffix": "%"},
             "bar": {"color": "#2E5F8A", "thickness": 0.28},
-            "bgcolor": "#161B27",
-            "borderwidth": 2,
-            "bordercolor": "#1F2937",
+            "bgcolor": "#161B27", "borderwidth": 2, "bordercolor": "#1F2937",
             "steps": [
                 {"range": [-5, 0],  "color": "#7F1D1D"},
                 {"range": [0,  10], "color": "#991B1B"},
-                {"range": [10, 18], "color": "#B45309"},
-                {"range": [18, 25], "color": "#166534"},
+                {"range": [10, 15], "color": "#B45309"},
+                {"range": [15, 25], "color": "#166534"},   # target range
                 {"range": [25, 35], "color": "#064E3B"},
             ],
             "threshold": {
                 "line": {"color": "#F59E0B", "width": 3},
-                "thickness": 0.85,
-                "value": target_margin * 100,
+                "thickness": 0.85, "value": 20,            # 20% = midpoint of 15-25% target
             },
         },
     ))
@@ -476,13 +574,14 @@ with col3a:
         height=280, margin=dict(l=30, r=30, t=40, b=10),
     )
     st.plotly_chart(fig_gauge, use_container_width=True)
+    st.caption(f"Target: 15–25% | Consolidated EBITDA: {consol_margin:.1%}")
 
-    # Synergy breakdown table
+    # Synergy breakdown
     synergy_items = []
     if apply_cogs_synergy:
-        synergy_items.append(("Vendor Consolidation (COGS −2%)", total_rev * COGS_REDUCTION))
+        synergy_items.append(("Vendor Consolidation (−2% COGS)", total_rev * adj_cogs_pct * COGS_REDUCTION / (1 - COGS_REDUCTION) if COGS_REDUCTION else total_rev * cogs_pct_assumption * COGS_REDUCTION))
     if apply_labor_optim:
-        synergy_items.append(("Labor Scheduling (Labor −1.5%)", total_labor * LABOR_REDUCTION))
+        synergy_items.append(("Labor Scheduling (−1.5% Labor)", total_rev * labor_pct_assumption * LABOR_REDUCTION))
     if apply_pricing:
         synergy_items.append(("Pricing Power (+1.5% ASP)", base_rev * REVENUE_UPLIFT))
 
@@ -494,29 +593,35 @@ with col3a:
         st.info("Enable synergies in sidebar to see uplift breakdown.")
 
 with col3b:
-    # Waterfall: Revenue → EBITDA build
+    # ── P&L Waterfall: Full Formula Hierarchy ─────────────────────────────────
+    # Gross Profit = Revenue − COGS
+    # 4-Wall EBITDA = Gross Profit − Labor − Occupancy
+    # Consolidated EBITDA = 4-Wall EBITDA − G&A
     waterfall_items = [
-        ("Net Revenue",                  total_rev,          "total"),
-        ("Cost of Goods Sold",          -total_cogs,          "relative"),
-        ("Labor Cost",                  -total_labor,         "relative"),
-        ("Gross Profit After Prime",     0,                   "total"),
-        ("Rent & Occupancy",            -fixed_cost_total,    "relative"),
-        ("G&A Expense",                 -ga_cost,             "relative"),
-        ("4-Wall EBITDA",               four_wall_ebitda,     "total"),
+        ("Net Revenue",           total_rev,            "total"),
+        ("(−) COGS",             -total_cogs,           "relative"),
+        ("= Gross Profit",        gross_profit,          "total"),
+        ("(−) Direct Labor",     -total_labor,          "relative"),
+        ("(−) Occupancy & OpEx", -occupancy_cost,       "relative"),
+        ("= 4-Wall EBITDA",       four_wall_ebitda,      "total"),
+        ("(−) Corporate G&A",    -ga_cost,              "relative"),
+        ("= Consol. EBITDA",      consol_ebitda,         "total"),
     ]
 
     measures = [w[2] for w in waterfall_items]
     labels   = [w[0] for w in waterfall_items]
     values   = [w[1] for w in waterfall_items]
+    pct_labels = []
+    for lbl, val, meas in waterfall_items:
+        if meas == "total" and total_rev > 0:
+            pct_labels.append(f"${abs(val)/1000:.0f}K ({val/total_rev:.1%})")
+        else:
+            pct_labels.append(f"${abs(val)/1000:.0f}K ({abs(val)/total_rev:.1%})")
 
     fig_wf = go.Figure(go.Waterfall(
-        orientation="v",
-        measure=measures,
-        x=labels,
-        y=values,
-        text=[f"${abs(v)/1000:.0f}K" for v in values],
-        textposition="outside",
-        textfont=dict(color="#EAF2FA", size=10),
+        orientation="v", measure=measures, x=labels, y=values,
+        text=pct_labels, textposition="outside",
+        textfont=dict(color="#EAF2FA", size=9),
         connector={"line": {"color": "#2E5F8A", "width": 1.5, "dash": "dot"}},
         increasing={"marker": {"color": "#166534", "line": {"color": "#52C97C", "width": 1}}},
         decreasing={"marker": {"color": "#991B1B", "line": {"color": "#FF6B6B", "width": 1}}},
@@ -524,60 +629,81 @@ with col3b:
         hovertemplate="<b>%{x}</b><br>$%{y:,.0f}<extra></extra>",
     ))
     fig_wf.update_layout(
-        title=dict(text="P&L Waterfall — Revenue to 4-Wall EBITDA", font=dict(color="#EAF2FA", size=14)),
+        title=dict(text="P&L Waterfall — Revenue → Gross Profit → 4-Wall → Consolidated EBITDA",
+                   font=dict(color="#EAF2FA", size=13)),
         paper_bgcolor="#0F1117", plot_bgcolor="#161B27",
         font=dict(color="#A8C8E8", family="Arial"),
-        height=380, margin=dict(l=20, r=20, t=50, b=80),
+        height=420, margin=dict(l=20, r=20, t=50, b=90),
         yaxis=dict(gridcolor="#1F2937", tickformat="$,.0f"),
-        xaxis=dict(tickangle=-30, tickfont=dict(size=10)),
+        xaxis=dict(tickangle=-30, tickfont=dict(size=9)),
         showlegend=False,
     )
     st.plotly_chart(fig_wf, use_container_width=True)
 
-# ── Store Deep Dive ───────────────────────────────────────────────────────────
+# ── Store-Level Scorecard ──────────────────────────────────────────────────────
 st.markdown('<div class="section-header">🏪 Store-Level Performance Scorecard</div>', unsafe_allow_html=True)
 
+# Per-store occupancy: allocate proportionally by store revenue share
+store_rev_totals = df.groupby("Location_Name")["Net_Sales_Adj"].sum()
+store_rev_share  = store_rev_totals / store_rev_totals.sum()
+
 store_kpi = df.groupby("Location_Name").apply(lambda x: pd.Series({
-    "Net Revenue ($)":        x["Net_Sales_Adj"].sum(),
-    "Transactions":           len(x),
-    "Avg Check ($)":          x["Net_Sales_Adj"].mean(),
-    "Prime Cost %":           (x["COGS_Adj"] + x["Labor_Cost_Adj"]).sum() / x["Net_Sales_Adj"].sum(),
-    "COGS %":                 x["COGS_Adj"].sum() / x["Net_Sales_Adj"].sum(),
-    "Labor %":                x["Labor_Cost_Adj"].sum() / x["Net_Sales_Adj"].sum(),
-    "Labor Eff. ($/hr)":      x["Net_Sales_Adj"].sum() / x["Labor_Hours_Allocated"].sum(),
-    "Discount Rate":          x["Discount_Amount"].sum() / x["Gross_Sales"].sum(),
+    "Net Revenue ($)":    x["Net_Sales_Adj"].sum(),
+    "Transactions":       len(x),
+    "Avg Check ($)":      x["Net_Sales_Adj"].mean(),
+    "Gross Margin %":     x["Gross_Profit_Adj"].sum() / x["Net_Sales_Adj"].sum(),
+    "COGS %":             x["COGS_Adj"].sum() / x["Net_Sales_Adj"].sum(),
+    "Labor %":            x["Labor_Cost_Adj"].sum() / x["Net_Sales_Adj"].sum(),
+    "Prime Cost %":       (x["COGS_Adj"] + x["Labor_Cost_Adj"]).sum() / x["Net_Sales_Adj"].sum(),
+    "Occupancy %":        occupancy_pct,   # applied uniformly (sidebar assumption)
+    "4-Wall EBITDA %":    (x["Gross_Profit_Adj"].sum() - x["Labor_Cost_Adj"].sum()
+                           - x["Net_Sales_Adj"].sum() * occupancy_pct) / x["Net_Sales_Adj"].sum(),
+    "Labor Eff. ($/hr)":  x["Net_Sales_Adj"].sum() / x["Labor_Hours_Allocated"].sum(),
+    "Discount Rate":      x["Discount_Amount"].sum() / x["Gross_Sales"].sum(),
 })).reset_index()
 
-def highlight_prime(val):
-    if isinstance(val, float):
+def highlight_margin(val, col_name):
+    if not isinstance(val, float): return ""
+    if col_name == "Prime Cost %":
         if val > 0.65: return "background-color:#7F1D1D;color:#FCA5A5;font-weight:700"
         elif val > 0.60: return "background-color:#B45309;color:#FDE68A;font-weight:700"
         elif val < 0.52: return "background-color:#064E3B;color:#6EE7B7"
+    elif col_name == "4-Wall EBITDA %":
+        if val > 0.25: return "background-color:#064E3B;color:#6EE7B7;font-weight:700"
+        elif val > 0.15: return "background-color:#166534;color:#BBF7D0"
+        elif val < 0.05: return "background-color:#7F1D1D;color:#FCA5A5"
     return ""
 
 fmt_dict = {
-    "Net Revenue ($)":    "${:,.0f}",
-    "Transactions":       "{:,.0f}",
-    "Avg Check ($)":      "${:.2f}",
-    "Prime Cost %":       "{:.1%}",
-    "COGS %":             "{:.1%}",
-    "Labor %":            "{:.1%}",
-    "Labor Eff. ($/hr)":  "${:.2f}",
-    "Discount Rate":      "{:.2%}",
+    "Net Revenue ($)":   "${:,.0f}",
+    "Transactions":      "{:,.0f}",
+    "Avg Check ($)":     "${:.2f}",
+    "Gross Margin %":    "{:.1%}",
+    "COGS %":            "{:.1%}",
+    "Labor %":           "{:.1%}",
+    "Prime Cost %":      "{:.1%}",
+    "Occupancy %":       "{:.1%}",
+    "4-Wall EBITDA %":   "{:.1%}",
+    "Labor Eff. ($/hr)": "${:.2f}",
+    "Discount Rate":     "{:.2%}",
 }
 
-st.dataframe(
-    store_kpi.style
-        .format(fmt_dict)
-        .applymap(highlight_prime, subset=["Prime Cost %"])
-        .set_properties(**{"background-color": "#161B27", "color": "#EAF2FA",
-                           "border": "1px solid #1F2937"}),
-    hide_index=True,
-    use_container_width=True,
-    height=220,
+styled = store_kpi.style.format(fmt_dict)
+for col in ["Prime Cost %", "4-Wall EBITDA %"]:
+    styled = styled.applymap(lambda v: highlight_margin(v, col), subset=[col])
+styled = styled.set_properties(**{
+    "background-color": "#161B27", "color": "#EAF2FA", "border": "1px solid #1F2937"
+})
+
+st.dataframe(styled, hide_index=True, use_container_width=True, height=240)
+
+# Benchmark reference
+st.caption(
+    "📏 Benchmarks: COGS 28–34% | Labor 25–32% | Prime Cost <62% | "
+    "Occupancy 12–18% | 4-Wall EBITDA 15–25%"
 )
 
-# ── Monthly Revenue Trend ─────────────────────────────────────────────────────
+# ── Monthly Revenue Trend ──────────────────────────────────────────────────────
 st.markdown('<div class="section-header">📉 Monthly Revenue Trend by Store</div>', unsafe_allow_html=True)
 
 monthly_rev = df.groupby(["Month", "Location_Name"])["Net_Sales_Adj"].sum().reset_index()
@@ -603,7 +729,7 @@ fig_trend.update_layout(
 )
 st.plotly_chart(fig_trend, use_container_width=True)
 
-# ── Day Part Mix ──────────────────────────────────────────────────────────────
+# ── Day Part & Category Mix ────────────────────────────────────────────────────
 col_dp1, col_dp2 = st.columns(2)
 
 with col_dp1:
@@ -643,7 +769,7 @@ with col_dp2:
     )
     st.plotly_chart(fig_cat, use_container_width=True)
 
-# ── Footer ────────────────────────────────────────────────────────────────────
+# ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()
 st.markdown(f"""
 <div style="text-align:center;color:#4B5563;font-size:11px;padding:12px;">

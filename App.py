@@ -775,7 +775,7 @@ fmt_dict = {
 
 styled = store_kpi.style.format(fmt_dict)
 for col in ["Prime Cost %", "4-Wall EBITDA %"]:
-    styled = styled.applymap(lambda v: highlight_margin(v, col), subset=[col])
+    styled = styled.map(lambda v: highlight_margin(v, col), subset=[col]) if hasattr(styled, "map") else styled.applymap(lambda v: highlight_margin(v, col), subset=[col])
 styled = styled.set_properties(**{
     "background-color": "#161B27", "color": "#EAF2FA", "border": "1px solid #1F2937"
 })
